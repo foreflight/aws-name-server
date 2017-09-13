@@ -8,7 +8,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/mitchellh/goamz/aws"
+	"encoding/json"
+	"github.com/aws/aws-sdk-go/aws/ec2metadata"
+	"github.com/aws/aws-sdk-go/aws/session"
 )
 
 const USAGE = `Usage: aws-name-server --domain <domain>
@@ -24,7 +26,7 @@ aws-name-server --domain internal.example.com will serve DNS requests for:
  <n>.<name>.internal.example.com      — <n>th instance tagged with Name=<name>
  <n>.<role>.role.internal.example.com — <n>th instance tagged with Role=<role>
 
-For more details see https://github.com/ConradIrwin/aws-name-server`
+For more details see https://github.com/danieljimenez/aws-name-server`
 
 const CAPABILITIES = `FATAL
 
@@ -35,17 +37,15 @@ Using capabilities (recommended):
 
 Just run it as root (not recommended):
  $ sudo aws-name-server
-
 `
 
 func main() {
-	domain := flag.String("domain", "", "the domain heirarchy to serve (e.g. aws.example.com)")
-	hostname := flag.String("hostname", "", "the public hostname of this server (e.g. ec2-12-34-56-78.compute-1.amazonaws.com)")
-	help := flag.Bool("help", false, "show help")
 
-	region := flag.String("aws-region", "us-east-1", "The AWS Region")
-	accessKey := flag.String("aws-access-key-id", "", "The AWS Access Key Id")
-	secretKey := flag.String("aws-secret-access-key", "", "The AWS Secret Key")
+	domain := flag.String("domain", "", "the domain hierarchy to serve (e.g. aws.example.com)")
+	hostname := flag.String("hostname", "", "the public hostname of this server (e.g. ec2-12-34-56-78.compute-1.amazonaws.com)")
+	listenAddress := flag.String("listenAddress", ":53", "the public hostname of this server (e.g. ec2-12-34-56-78.compute-1.amazonaws.com)")
+	configFile := flag.String("configFile", "/etc/aws-name-server.conf", "path to a JSON file with an array of AWSAccount structs.")
+	help := flag.Bool("help", false, "show help")
 
 	flag.Parse()
 
@@ -58,8 +58,9 @@ func main() {
 	}
 
 	hostnameFuture := getHostname()
+	accounts := getConfig(configFile)
 
-	cache, err := NewEC2Cache(*region, *accessKey, *secretKey)
+	caches, recordCount, err := NewCaches(accounts, *domain)
 	if err != nil {
 		log.Fatalf("FATAL: %s", err)
 	}
@@ -68,14 +69,38 @@ func main() {
 		*hostname = <-hostnameFuture
 	}
 
-	server := NewEC2Server(*domain, *hostname, cache)
-
-	log.Printf("Serving %d DNS records for *.%s from %s port 53", cache.Size(), server.domain, server.hostname)
+	server := NewNameServer(*domain, *hostname, caches)
+	log.Printf("Serving %d DNS records for *.%s from %s%s", recordCount, server.domain, server.hostname, *listenAddress)
 
 	go checkNSRecordMatches(server.domain, server.hostname)
+	go server.listenAndServe(*listenAddress, "udp")
+	server.listenAndServe(*listenAddress, "tcp")
+}
 
-	go server.listenAndServe(":53", "udp")
-	server.listenAndServe(":53", "tcp")
+func getConfig(configFile *string) []*AWSAccount {
+	var accounts []*AWSAccount
+
+	configFileObj, err := os.Open(*configFile)
+	if err != nil {
+		log.Printf("WARN: %s", err)
+	} else {
+		accounts = []*AWSAccount{
+			{
+				NickName: `json:"NickName"`,
+				Arn:      `json:"ARN"`,
+				Region:   `json:"Region"`,
+			},
+		}
+	}
+
+	if configFileObj != nil && err == nil {
+		jsonParser := json.NewDecoder(configFileObj)
+		if err = jsonParser.Decode(&accounts); err != nil {
+			log.Fatalf("FATAL: %s", err)
+		}
+	}
+
+	return accounts
 }
 
 func getHostname() chan string {
@@ -83,7 +108,12 @@ func getHostname() chan string {
 	go func() {
 
 		// This can be slow on non-EC2-instances
-		if hostname, err := aws.GetMetaData("public-hostname"); err == nil {
+		mySession, err := session.NewSession()
+		if err != nil {
+			log.Fatalf("FATAL: %s", err)
+		}
+
+		if hostname, err := ec2metadata.New(mySession).GetMetadata("public-hostname"); err == nil {
 			result <- string(hostname)
 			return
 		}
@@ -107,9 +137,9 @@ func checkNSRecordMatches(domain, hostname string) {
 	results, err := net.LookupNS(domain)
 
 	if err != nil {
-		log.Printf("|WARN| No working NS records found for %s", domain)
-		log.Printf("|WARN| You can still test things using `dig example.%s @%s`, but you won't be able to resolve hosts directly.", domain, hostname)
-		log.Printf("|WARN| See https://github.com/ConradIrwin/aws-name-server for instructions on setting up NS records.")
+		log.Printf("WARN: No working NS records found for %s", domain)
+		log.Printf("WARN: You can still test things using `dig example.%s @%s`, but you won't be able to resolve hosts directly.", domain, hostname)
+		log.Printf("WARN: See https://github.com/danieljimenez/aws-name-server for instructions on setting up NS records.")
 		return
 	}
 
@@ -122,9 +152,9 @@ func checkNSRecordMatches(domain, hostname string) {
 	}
 
 	if !matched {
-		log.Printf("|WARN| The NS record for %s points to: %s", domain, results[0].Host)
-		log.Printf("|WARN| But --hostname is: %s", hostname)
-		log.Printf("|WARN| These hostnames must match if you want DNS to work properly.")
-		log.Printf("|WARN| See https://github.com/ConradIrwin/aws-name-server for instructions on NS records.")
+		log.Printf("WARN: The NS record for %s points to: %s", domain, results[0].Host)
+		log.Printf("WARN: But --hostname is: %s", hostname)
+		log.Printf("WARN: These hostnames must match if you want DNS to work properly.")
+		log.Printf("WARN: See https://github.com/danieljimenez/aws-name-server for instructions on NS records.")
 	}
 }

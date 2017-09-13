@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# chkconfig: 35 10 10
+# description: AWS Name Server
+#              
+
+. /etc/init.d/functions
+. /etc/rc.d/init.d/functions
+lockfile=/var/lock/subsys/aws-name-server
+
+RETVAL=0
+
+case "$1" in
+    start)
+        echo -n $"Starting aws-name-server: "
+      	daemon /usr/local/sbin/aws-name-server --domain ____YOUR_DOMAIN_HERE___ --hostname ____YOUR_HOSTNAME_HERE___ >/var/log/aws-name-server 2>&1 &
+        RETVAL=$?
+        echo_success
+        echo
+        [ $RETVAL -eq 0 ] && touch /var/lock/subsys/aws-name-server
+        ;;
+    stop)
+        echo -n $"Stopping aws-name-server: "
+        killproc aws-name-server
+        [ $RETVAL -eq 0 ] && rm -f /var/lock/subsys/aws-name-server
+        echo
+        ;;
+    restart)
+        $0 stop
+        $0 start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0
