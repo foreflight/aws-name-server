@@ -130,7 +130,14 @@ func (cache *Cache) setRecords(records map[Key][]*Record) {
 }
 
 func (cache *Cache) Instances(session *session.Session) (*ec2.DescribeInstancesOutput, error) {
-	return ec2.New(session).DescribeInstances(&ec2.DescribeInstancesInput{})
+	return ec2.New(session).DescribeInstances(&ec2.DescribeInstancesInput{
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("instance-state-name"),
+				Values: []*string{aws.String("running")},
+			},
+		},
+	})
 }
 
 func (cache *Cache) Databases(session *session.Session) (*rds.DescribeDBInstancesOutput, error) {
